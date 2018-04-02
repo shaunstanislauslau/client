@@ -149,7 +149,7 @@ class ExitHooks(object):
             traceback.print_exception(exc_type, exc, *tb)
 
 
-def _init_headless(api, run, job_type, cloud=True):
+def _init_headless(api, run, cloud=True):
     if 'WANDB_DESCRIPTION' in os.environ:
         run.description = os.environ['WANDB_DESCRIPTION']
 
@@ -171,13 +171,13 @@ def _init_headless(api, run, job_type, cloud=True):
 
     # we need to create the run first of all so history and summary syncing
     # work even if the syncer process is slow to start.
-    if cloud:
+    if cloud and not run.storage_id:
         upsert_result = api.upsert_run(name=run.id,
                                        project=api.settings("project"),
                                        entity=api.settings("entity"),
                                        config=run.config.as_dict(), description=run.description, host=host,
                                        program_path=program, repo=remote_url, sweep_name=run.sweep_id,
-                                       job_type=job_type)
+                                       job_type=run.job_type)
         run.storage_id = upsert_result['id']
     env = dict(os.environ)
     run.set_environment(env)
@@ -200,7 +200,7 @@ def _init_headless(api, run, job_type, cloud=True):
         'stdout_master_fd': stdout_master_fd,
         'stderr_master_fd': stderr_master_fd,
         'cloud': cloud,
-        'job_type': job_type,
+        'job_type': run.job_type,
         'program': program,
         'port': server.port
     }
@@ -252,7 +252,7 @@ def _init_headless(api, run, job_type, cloud=True):
 run = None
 
 
-def init(job_type='train', config=None):
+def init(job_type=None, config=None, id=None, resume='never'):
     global run
     global __stage_dir__
     # If a thread calls wandb.init() it will get the same Run object as
@@ -275,19 +275,42 @@ def init(job_type='train', config=None):
     except AttributeError:
         pass
 
-    run = wandb_run.Run.from_environment_or_defaults()
-    run.job_type = job_type
+    api = wandb_api.Api()
+
+
+    if id is not None and (resume == 'must' or resume == 'allow'):
+        run = wandb_run.Run.from_environment_or_defaults(run_id=id)
+        run_gql = api.get_run(id)['model']['bucket']
+        import pprint
+        pprint.pprint(run_gql)
+        run.storage_id = run_gql['id']
+        run.config.load_json(json.loads(run_gql['config']))
+        #run._dir = wandb_run.run_dir_path(run.id, dry=run.mode == 'dryrun')
+        run._mkdir()
+
+        urls = api.download_urls(api.settings('project'), run=run.id)
+        for name in urls:
+            length, response = api.download_file(urls[name]['url'])
+            with open(os.path.join(run.dir, name), "wb") as f:
+                for data in response.iter_content(chunk_size=4096):
+                    f.write(data)
+
+    else:  # XXX
+        run = wandb_run.Run.from_environment_or_defaults()
+
+    if job_type is not None:
+        run.job_type = job_type
+
     run.set_environment()
 
-    api = wandb_api.Api()
     api.set_current_run_id(run.id)
     if run.mode == 'run':
         api.ensure_configured()
-        if run.storage_id:
+        if False and run.storage_id:  # XXX
             # we have to write job_type here because we don't know it before init()
-            api.upsert_run(id=run.storage_id, job_type=job_type)
+            api.upsert_run(id=run.storage_id, job_type=run.job_type)
         else:
-            _init_headless(api, run, job_type)
+            _init_headless(api, run)
 
         def config_persist_callback():
             api.upsert_run(id=run.storage_id, config=run.config.as_dict())
@@ -302,7 +325,7 @@ def init(job_type='train', config=None):
             'wandb dry run mode. Run `wandb board` from this directory to see results')
         termlog()
         run.config.set_run_dir(run.dir)
-        _init_headless(api, run, job_type, False)
+        _init_headless(api, run, False)
     else:
         termlog(
             'Invalid run mode "%s". Please unset WANDB_MODE to do a dry run or' % run.mode)

@@ -20,10 +20,11 @@ DESCRIPTION_FNAME = 'description.md'
 
 
 class Run(object):
-    def __init__(self, run_id=None, mode=None, dir=None, config=None, sweep_id=None, storage_id=None, description=None):
+    def __init__(self, run_id=None, mode=None, dir=None, config=None, sweep_id=None, storage_id=None, description=None, job_type=None):
         # self.id is actually stored in the "name" attribute in GQL
         self.id = run_id if run_id else generate_id()
         self.mode = mode if mode else 'dryrun'
+        self.job_type = job_type if job_type is not None else 'train'
 
         if dir is None:
             self._dir = run_dir_path(self.id, dry=self.mode == 'dryrun')
@@ -58,7 +59,7 @@ class Run(object):
         self._examples = None
 
     @classmethod
-    def from_environment_or_defaults(cls, environment=None):
+    def from_environment_or_defaults(cls, environment=None, run_id=None):
         """Create a Run object taking values from the local environment where possible.
 
         The run ID comes from WANDB_RUN_ID or is randomly generated.
@@ -70,7 +71,8 @@ class Run(object):
         """
         if environment is None:
             environment = os.environ
-        run_id = environment.get('WANDB_RUN_ID')
+        if run_id is None:
+            run_id = environment.get('WANDB_RUN_ID')
         storage_id = environment.get('WANDB_RUN_STORAGE_ID')
         mode = environment.get('WANDB_MODE')
         run_dir = environment.get('WANDB_RUN_DIR')

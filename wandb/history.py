@@ -26,7 +26,6 @@ class History(object):
         self._start_time = wandb.START_TIME
         self.out_dir = out_dir
         self.fname = os.path.join(out_dir, fname)
-        self.rows = []
         self.row = {}
         self.stream_name = stream_name
         # during a batched context logging may still be disabled. we do it this way
@@ -35,22 +34,27 @@ class History(object):
         self.batched = False
         # not all rows have the same keys. this is the union of them all.
         self._keys = set()
-        self._process = "user" if os.getenv("WANDB_INITED") else "wandb"
         self._streams = {}
         self._steps = 0
         self._lock = Lock()
         self._torch = None
+        self.load()
+
+        self._file = open(self.fname, 'a')
+        self._add_callback = add_callback
+
+    def load(self):
+        """Load this history's rows from the file. Useful in case it may
+        have been modified by another process."""
+        self.rows = []
         try:
             # only preload the default stream, TODO: better stream support
-            if stream_name == "default":
+            if self.stream_name == "default":
                 with open(self.fname) as f:
                     for line in f:
                         self._index(json.loads(line))
         except IOError:
             pass
-
-        self._file = open(self.fname, 'a')
-        self._add_callback = add_callback
 
     def keys(self):
         media_keys = [k for k, v in six.iteritems(
@@ -117,9 +121,8 @@ class History(object):
 
     def _index(self, row):
         """Internal row adding method that updates step, and keys"""
-        if self._process == "wandb":
-            self.row = row
-            self.rows.append(row)
+        self.row = row
+        self.rows.append(row)
         self._keys.update(row.keys())
         self._steps += 1
 

@@ -33,7 +33,7 @@ from wandb import wandb_run
 from wandb import wandb_socket
 from wandb import meta
 import wandb.api
-from .api import BinaryFilePolicy, CRDedupeFilePolicy
+from .api import BinaryFilePolicy, CRDedupeFilePolicy, DefaultFilePolicy
 logger = logging.getLogger(__name__)
 
 
@@ -41,26 +41,34 @@ OUTPUT_FNAME = 'output.log'
 
 
 class FileTailer(object):
-    def __init__(self, path, on_read_fn, binary=False):
+    def __init__(self, path, on_read_fn, binary=False, line=0):
         self._path = path
+        self._binary = binary
         mode = 'r'
         if binary:
             mode = 'rb'
         self._file = open(path, mode)
         self._on_read_fn = on_read_fn
+        self._line = line
         self._thread = threading.Thread(target=self._thread_body)
         self._thread.start()
 
     def _thread_body(self):
-        while True:
-            where = self._file.tell()
-            data = self._file.read(1024)
-            if not data:
-                time.sleep(1)
-                # required for to get python2 working (Issue #50)
-                self._file.seek(where)
-            else:
-                self._on_read_fn(data)
+        if self._binary:
+            while True:
+                where = self._file.tell()
+                data = self._file.read(1024)
+                if not data:
+                    time.sleep(1)
+                    # required for to get python2 working (Issue #50)
+                    self._file.seek(where)
+                else:
+                    self._on_read_fn(data)
+        else:
+            for i, line in enumerate(self._file):
+                if i < self._line:
+                    continue
+                self._on_read_fn(line)
 
 
 class FileEventHandler(object):
@@ -137,6 +145,9 @@ class FileEventHandlerSummary(FileEventHandler):
 
 class FileEventHandlerTextStream(FileEventHandler):
     def __init__(self, *args, **kwargs):
+        self._start_line = kwargs.get('start_line')
+        if 'start_line' in kwargs:
+            del kwargs['start_line']
         super(FileEventHandlerTextStream, self).__init__(*args, **kwargs)
         self._tailer = None
 
@@ -159,7 +170,7 @@ class FileEventHandlerTextStream(FileEventHandler):
         def on_read(data):
             pusher.write_string(data)
 
-        self._tailer = FileTailer(self.file_path, on_read)
+        self._tailer = FileTailer(self.file_path, on_read, line=self._start_line)
 
 
 class FileEventHandlerBinaryStream(FileEventHandler):
@@ -315,6 +326,11 @@ class RunManager(object):
 
             self._api.get_file_stream_api().set_file_policy(
                 OUTPUT_FNAME, CRDedupeFilePolicy())
+            # we initialize this specially so we correctly append to the history
+            # if we're resuming a run
+            self._create_history_handler(run.history)
+            self._api.get_file_stream_api().set_file_policy(
+                run.history.fname, DefaultFilePolicy(len(run.history.rows)))
 
     def _get_stdout_stderr_streams(self):
         """Sets up STDOUT and STDERR streams. Only call this once."""
@@ -522,20 +538,24 @@ class RunManager(object):
             # Reload the summary
             self._run.summary.load()
             summary = self._run.summary._summary
-            wandb.termlog('Run summary:')
-            max_len = max([len(k) for k in summary.keys()])
-            format_str = '  {:>%s} {}' % max_len
-            for k, v in summary.items():
-                wandb.termlog(format_str.format(k, v))
+            summary_keys = summary.keys()
+            if summary_keys:
+                wandb.termlog('Run summary:')
+                max_len = max([len(k) for k in summary_keys])
+                format_str = '  {:>%s} {}' % max_len
+                for k, v in summary.items():
+                    wandb.termlog(format_str.format(k, v))
         if self._run.has_history:
+            self._run.history.load()
             history_keys = self._run.history.keys()
-            wandb.termlog('Run history:')
-            max_len = max([len(k) for k in history_keys])
-            for key in history_keys:
-                vals = util.downsample(self._run.history.column(key), 40)
-                line = sparkline.sparkify(vals)
-                format_str = u'  {:>%s} {}' % max_len
-                wandb.termlog(format_str.format(key, line))
+            if history_keys:
+                wandb.termlog('Run history:')
+                max_len = max([len(k) for k in history_keys])
+                for key in history_keys:
+                    vals = util.downsample(self._run.history.column(key), 40)
+                    line = sparkline.sparkify(vals)
+                    format_str = u'  {:>%s} {}' % max_len
+                    wandb.termlog(format_str.format(key, line))
         if self._run.has_examples:
             wandb.termlog('Saved %s examples' % self._run.examples.count())
 
@@ -629,13 +649,18 @@ class RunManager(object):
         if headless:
             self._socket.done()
 
+    def _create_history_handler(self, history):
+        """We create this specially before starting watchdog in order to support
+        resuming pre-existing histories.
+        """
+        basename = os.path.basename(history.fname)
+        self._event_handlers[basename] = FileEventHandlerTextStream(
+            history.fname, basename, self._api, start_line=len(history.rows))
+
     def _get_handler(self, file_path, save_name):
         self._stats.update_file(file_path)
         if save_name not in self._event_handlers:
-            if save_name == 'wandb-history.jsonl':
-                self._event_handlers['wandb-history.jsonl'] = FileEventHandlerTextStream(
-                    file_path, 'wandb-history.jsonl', self._api)
-            elif save_name == 'wandb-events.jsonl':
+            if save_name == 'wandb-events.jsonl':
                 self._event_handlers['wandb-events.jsonl'] = FileEventHandlerTextStream(
                     file_path, 'wandb-events.jsonl', self._api)
             # Don't try to stream tensorboard files for now.

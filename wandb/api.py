@@ -483,6 +483,73 @@ class Api(object):
         return response['upsertModel']['model']
 
     @normalize_exceptions
+    def get_run(self, run=None, project=None, entity=None):
+        query = gql('''
+        query Run($entity: String!, $project: String!, $run: String!) {
+            model(name: $project, entityName: $entity) {
+              __typename
+              bucket(name: $run) {
+                __typename
+                id
+                name
+                config
+                framework
+                description
+                createdAt
+                fileCount
+                github
+                commit
+                host
+                state
+                summaryMetrics
+                systemMetrics
+                tags
+                heartbeatAt
+                shouldStop
+                sweep {
+                    __typename
+                    name
+                }
+                user {
+                  __typename
+                  username
+                  photoUrl
+                }
+                files {
+                  __typename
+                  edges {
+                    __typename
+                    node {
+                      __typename
+                      id
+                      name
+                      url
+                      sizeBytes
+                      updatedAt
+                    }
+                  }
+                }
+              }
+            }
+        }
+        ''')
+
+        if entity is None:
+            entity = self.settings('entity')
+        if project is None:
+            project = self.settings('project')
+        if run is None:
+            run = self.settings('run')
+
+        query_result = self.gql(query, variable_values={
+            'run': run,
+            'project': project,
+            'entity': entity,
+        })
+        query_result['model']['bucket']['files'] = self._flatten_edges(query_result['model']['bucket']['files'])
+        return query_result
+
+    @normalize_exceptions
     def upsert_run(self, id=None, name=None, project=None, host=None,
                    config=None, description=None, entity=None, state=None,
                    repo=None, job_type=None, program_path=None, commit=None,
@@ -958,8 +1025,8 @@ Chunk = collections.namedtuple('Chunk', ('filename', 'data'))
 
 
 class DefaultFilePolicy(object):
-    def __init__(self):
-        self._chunk_id = 0
+    def __init__(self, init_chunk_id=0):
+        self._chunk_id = init_chunk_id
 
     def process_chunks(self, chunks):
         chunk_id = self._chunk_id
@@ -1097,6 +1164,9 @@ class FileStreamApi(object):
                                 self._endpoint, json={'complete': True, 'exitcode': int(finished.exitcode)})
 
     def _send(self, chunks):
+        import pprint
+        print('sending')
+        pprint.pprint(chunks)
         # create files dict. dict of <filename: chunks> pairs where chunks is a list of
         # [chunk_id, chunk_data] tuples (as lists since this will be json).
         files = {}
