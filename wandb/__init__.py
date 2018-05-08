@@ -141,7 +141,7 @@ def _init_headless(run, job_type, cloud=True):
     internal_cli_path = os.path.join(
         os.path.dirname(__file__), 'internal_cli.py')
 
-    if six.PY2:
+    if six.PY2 or sys.platform == 'win32':
         # TODO(adrian): close_fds=False is bad for security. we set
         # it so we can pass the PTY FDs to the wandb process. We
         # should use subprocess32, which has pass_fds.
