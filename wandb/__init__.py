@@ -186,10 +186,7 @@ def _init_headless(run, job_type, cloud=True):
         stdout_redirector = io_wrap.FileRedirector(sys.stdout, stdout_slave)
         stderr_redirector = io_wrap.FileRedirector(sys.stderr, stderr_slave)
     except io.UnsupportedOperation as e:
-        if sys.version_info[0] < 3:
-            termerror('Failed to redirect STDOUT/STDERR. Please try Python 3.')
-        else:
-            termerror('Failed to redirect STDOUT/STDERR.')
+        termerror('Failed to redirect STDOUT/STDERR. If you are using Jupyter, sorry, that isn\'t supported.')
         sys.exit(1)
 
     # TODO(adrian): we should register this right after starting the wandb process to
